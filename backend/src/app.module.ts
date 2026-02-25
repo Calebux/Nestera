@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import configuration from './config/configuration';
@@ -19,6 +20,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { ClaimsModule } from './modules/claims/claims.module';
 import { DisputesModule } from './modules/disputes/disputes.module';
 import { AdminAnalyticsModule } from './modules/admin-analytics/admin-analytics.module';
+import { SweepModule } from './modules/sweep/sweep.module';
 
 @Module({
   imports: [
@@ -40,6 +42,7 @@ import { AdminAnalyticsModule } from './modules/admin-analytics/admin-analytics.
         synchronize: true,
       }),
     }),
+    ScheduleModule.forRoot(),
     AuthModule,
     RedisCacheModule,
     HealthModule,
@@ -51,6 +54,9 @@ import { AdminAnalyticsModule } from './modules/admin-analytics/admin-analytics.
     ClaimsModule,
     DisputesModule,
     AdminAnalyticsModule,
+    // Sweep tasks for periodic sweeping of excess funds
+    // SweepModule is added below
+    SweepModule,
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
