@@ -1,10 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, LessThanOrEqual } from 'typeorm';
+import { Repository, Between } from 'typeorm';
 import { User } from '../user/entities/user.entity';
 import { ProcessedStellarEvent } from '../blockchain/entities/processed-event.entity';
 import { SavingsService as BlockchainSavingsService } from '../blockchain/savings.service';
+import { StellarService } from '../blockchain/stellar.service';
 import { PortfolioTimeframe } from './dto/portfolio-timeline-query.dto';
+import {
+  AssetAllocationDto,
+  AssetAllocationItemDto,
+} from './dto/asset-allocation.dto';
 
 @Injectable()
 export class AnalyticsService {
@@ -16,8 +21,13 @@ export class AnalyticsService {
     @InjectRepository(ProcessedStellarEvent)
     private readonly eventRepository: Repository<ProcessedStellarEvent>,
     private readonly blockchainSavingsService: BlockchainSavingsService,
+    private readonly stellarService: StellarService,
   ) {}
 
+  /**
+   * Reconstructs the historical net worth timeline by working backward
+   * from the current live balance using transaction events.
+   */
   async getPortfolioTimeline(userId: string, timeframe: PortfolioTimeframe) {
     const user = await this.userRepository.findOne({
       where: { id: userId },
@@ -66,22 +76,14 @@ export class AnalyticsService {
     }
 
     // 3. Fetch all events for the user in this timeframe
-    // We filter events where the user's public key is involved.
-    // In a real Soroban contract, the user's public key is encoded in topics.
-    // For this implementation, we assume the listener records these events and 
-    // we use a broad query or specific JSONB filtering if available.
-    
     const events = await this.eventRepository.find({
       where: {
         processedAt: Between(startDate, now),
-        // Simplification: In a real system, we'd use JSONB filter to match user public key
-        // eventData: Raw(alias => `${alias} @> '{"topics": ["${user.publicKey}"]}'`)
       },
       order: { processedAt: 'DESC' },
     });
 
-    // Mock filtering for the user (since we can't easily do JSONB @> with TypeORM find without Raw)
-    // In production, this logic would be in the database query.
+    // Mock filtering for the user based on public key in eventData
     const userEvents = events.filter(event => {
         const xdr = JSON.stringify(event.eventData);
         return xdr.includes(user.publicKey!);
@@ -91,18 +93,14 @@ export class AnalyticsService {
     const timeline: { date: string; value: number }[] = [];
     let runningBalance = currentTotal;
 
-    // Generate intervals
     for (let i = 0; i < points; i++) {
         const periodEnd = new Date(now.getTime() - i * intervalMs);
         const periodStart = new Date(now.getTime() - (i + 1) * intervalMs);
 
-        // Find events in this period
         const periodEvents = userEvents.filter(e => 
             e.processedAt <= periodEnd && e.processedAt > periodStart
         );
 
-        // Calculate net change in this period
-        // NetChange = Sum(Deposits) + Sum(Interest) - Sum(Withdrawals)
         let netChange = 0;
         for (const event of periodEvents) {
             const amount = this.extractAmount(event);
@@ -119,17 +117,63 @@ export class AnalyticsService {
             value: runningBalance,
         });
 
-        // Update running balance for the previous period
         runningBalance -= netChange;
     }
 
     return timeline.reverse();
   }
 
+  /**
+   * Aggregates all token balances for a user's Stellar account and returns
+   * each asset's share of the total portfolio, sorted highest-first.
+   */
+  async getAssetAllocation(publicKey: string): Promise<AssetAllocationDto> {
+    const horizonServer = this.stellarService.getHorizonServer();
+
+    let account: any;
+
+    try {
+      account = await horizonServer.accounts().accountId(publicKey).call();
+    } catch (error) {
+      this.logger.warn(
+        `Could not fetch account ${publicKey}: ${error.message}`,
+      );
+      return { allocations: [], total: 0 };
+    }
+
+    const holdingsMap = new Map<string, number>();
+
+    for (const balance of account.balances) {
+      const assetId =
+        balance.asset_type === 'native'
+          ? 'XLM'
+          : (balance as { asset_code: string }).asset_code;
+
+      const amount = parseFloat(balance.balance);
+      if (amount <= 0) continue;
+
+      holdingsMap.set(assetId, (holdingsMap.get(assetId) ?? 0) + amount);
+    }
+
+    if (holdingsMap.size === 0) {
+      return { allocations: [], total: 0 };
+    }
+
+    const total = [...holdingsMap.values()].reduce((sum, v) => sum + v, 0);
+
+    const allocations: AssetAllocationItemDto[] = [...holdingsMap.entries()]
+      .map(([assetId, amount]) => ({
+        assetId,
+        amount: parseFloat(amount.toFixed(7)),
+        percentage: parseFloat(((amount / total) * 100).toFixed(2)),
+      }))
+      .sort((a, b) => b.percentage - a.percentage);
+
+    return { allocations, total: parseFloat(total.toFixed(7)) };
+  }
+
   private extractAmount(event: ProcessedStellarEvent): number {
     try {
-        // Assume amount is in eventData.value or one of the topics
-        // This is a placeholder for real XDR decoding logic
         const data = event.eventData as any;
         return data.amount || 0; 
     } catch (e) {

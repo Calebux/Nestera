@@ -3,18 +3,19 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  Inject,
 } from '@nestjs/common';
+import { CACHE_MANAGER } from '@nestjs/cache-manager';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Cache } from 'cache-manager';
 import { Repository } from 'typeorm';
 import { SavingsProduct } from './entities/savings-product.entity';
 import {
   UserSubscription,
   SubscriptionStatus,
 } from './entities/user-subscription.entity';
-import {
-  SavingsGoal,
-  SavingsGoalStatus,
-} from './entities/savings-goal.entity';
+import { SavingsGoal, SavingsGoalStatus } from './entities/savings-goal.entity';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import { User } from '../user/entities/user.entity';
@@ -34,7 +35,16 @@ export interface SavingsGoalProgress {
   percentageComplete: number;
 }
 
+export interface UserSubscriptionWithLiveBalance extends UserSubscription {
+  indexedAmount: number;
+  liveBalance: number;
+  liveBalanceStroops: number;
+  balanceSource: 'rpc' | 'cache';
+  vaultContractId: string | null;
+}
+
 const STROOPS_PER_XLM = 10_000_000;
+const POOLS_CACHE_KEY = 'pools_all';
 
 @Injectable()
 export class SavingsService {
@@ -50,17 +60,23 @@ export class SavingsService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly blockchainSavingsService: BlockchainSavingsService,
+    private readonly configService: ConfigService,
+    @Inject(CACHE_MANAGER) private readonly cacheManager: Cache,
   ) {}
 
   async createProduct(dto: CreateProductDto): Promise<SavingsProduct> {
     if (dto.minAmount > dto.maxAmount) {
-      throw new BadRequestException('minAmount must be less than or equal to maxAmount');
+      throw new BadRequestException(
+        'minAmount must be less than or equal to maxAmount',
+      );
     }
     const product = this.productRepository.create({
       ...dto,
       isActive: dto.isActive ?? true,
     });
-    return await this.productRepository.save(product);
+    const savedProduct = await this.productRepository.save(product);
+    await this.invalidatePoolsCache();
+    return savedProduct;
   }
 
   async updateProduct(
@@ -71,11 +87,19 @@ export class SavingsService {
     if (!product) {
       throw new NotFoundException(`Savings product ${id} not found`);
     }
-    if (dto.minAmount != null && dto.maxAmount != null && dto.minAmount > dto.maxAmount) {
-      throw new BadRequestException('minAmount must be less than or equal to maxAmount');
+    if (
+      dto.minAmount != null &&
+      dto.maxAmount != null &&
+      dto.minAmount > dto.maxAmount
+    ) {
+      throw new BadRequestException(
+        'minAmount must be less than or equal to maxAmount',
+      );
     }
     Object.assign(product, dto);
-    return await this.productRepository.save(product);
+    const updatedProduct = await this.productRepository.save(product);
+    await this.invalidatePoolsCache();
+    return updatedProduct;
   }
 
   async findAllProducts(activeOnly = false): Promise<SavingsProduct[]> {
@@ -93,6 +117,31 @@ export class SavingsService {
     return product;
   }
 
+  async findProductWithLiveData(id: string): Promise<{
+    product: SavingsProduct;
+    totalAssets: number;
+  }> {
+    const product = await this.findOneProduct(id);
+
+    let totalAssets = 0;
+
+    // Query live contract data if contractId is available
+    if (product.contractId) {
+      try {
+        totalAssets = await this.blockchainSavingsService.getVaultTotalAssets(
+          product.contractId,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to fetch live total_assets for contract ${product.contractId}: ${(error as Error).message}`,
+        );
+        // Continue with totalAssets = 0 if contract query fails
+      }
+    }
+
+    return { product, totalAssets };
+  }
+
   async subscribe(
     userId: string,
     productId: string,
@@ -100,9 +149,14 @@ export class SavingsService {
   ): Promise<UserSubscription> {
     const product = await this.findOneProduct(productId);
     if (!product.isActive) {
-      throw new BadRequestException('This savings product is not available for subscription');
+      throw new BadRequestException(
+        'This savings product is not available for subscription',
+      );
     }
-    if (amount < Number(product.minAmount) || amount > Number(product.maxAmount)) {
+    if (
+      amount < Number(product.minAmount) ||
+      amount > Number(product.maxAmount)
+    ) {
       throw new BadRequestException(
         `Amount must be between ${product.minAmount} and ${product.maxAmount}`,
       );
@@ -117,7 +171,7 @@ export class SavingsService {
       endDate: product.tenureMonths
         ? (() => {
             const d = new Date();
-            d.setMonth(d.getMonth() + product.tenureMonths!);
+            d.setMonth(d.getMonth() + product.tenureMonths);
             return d;
           })()
         : null,
@@ -125,11 +179,79 @@ export class SavingsService {
     return await this.subscriptionRepository.save(subscription);
   }
 
-  async findMySubscriptions(userId: string): Promise<UserSubscription[]> {
-    return await this.subscriptionRepository.find({
-      where: { userId },
-      order: { createdAt: 'DESC' },
-    });
+  async findMySubscriptions(
+    userId: string,
+  ): Promise<UserSubscriptionWithLiveBalance[]> {
+    const [subscriptions, user] = await Promise.all([
+      this.subscriptionRepository.find({
+        where: { userId },
+        order: { createdAt: 'DESC' },
+      }),
+      this.userRepository.findOne({
+        where: { id: userId },
+        select: ['id', 'publicKey'],
+      }),
+    ]);
+
+    if (!subscriptions.length) {
+      return [];
+    }
+
+    if (!user?.publicKey) {
+      return subscriptions.map((subscription) =>
+        this.mapSubscriptionWithLiveBalance(
+          subscription,
+          Number(subscription.amount),
+          Math.round(Number(subscription.amount) * STROOPS_PER_XLM),
+          'cache',
+          null,
+        ),
+      );
+    }
+
+    const userPublicKey = user.publicKey;
+
+    const defaultVaultContractId =
+      this.configService.get<string>('stellar.contractId') || null;
+
+    return await Promise.all(
+      subscriptions.map(async (subscription) => {
+        const fallbackAmount = Number(subscription.amount);
+        const vaultContractId =
+          this.resolveVaultContractId(subscription) ?? defaultVaultContractId;
+
+        if (!vaultContractId) {
+          return this.mapSubscriptionWithLiveBalance(
+            subscription,
+            fallbackAmount,
+            Math.round(fallbackAmount * STROOPS_PER_XLM),
+            'cache',
+            null,
+          );
+        }
+
+        const liveBalanceStroops =
+          await this.blockchainSavingsService.getUserVaultBalance(
+            vaultContractId,
+            userPublicKey,
+          );
+
+        return this.mapSubscriptionWithLiveBalance(
+          subscription,
+          this.stroopsToDecimal(liveBalanceStroops),
+          liveBalanceStroops,
+          'rpc',
+          vaultContractId,
+        );
+      }),
+    );
+  }
+
+  async invalidatePoolsCache(): Promise<void> {
+    await this.cacheManager.del(POOLS_CACHE_KEY);
+    this.logger.log(
+      `Invalidated savings products cache key: ${POOLS_CACHE_KEY}`,
+    );
   }
 
   async findMyGoals(userId: string): Promise<SavingsGoalProgress[]> {
@@ -149,8 +271,11 @@ export class SavingsService {
     }
 
     const liveVaultBalanceStroops = user?.publicKey
-      ? (await this.blockchainSavingsService.getUserSavingsBalance(user.publicKey))
-          .total
+      ? (
+          await this.blockchainSavingsService.getUserSavingsBalance(
+            user.publicKey,
+          )
+        ).total
       : 0;
 
     return goals.map((goal) =>
@@ -182,6 +307,50 @@ export class SavingsService {
       currentBalance,
       percentageComplete,
     };
+  }
+
+  private mapSubscriptionWithLiveBalance(
+    subscription: UserSubscription,
+    liveBalance: number,
+    liveBalanceStroops: number,
+    balanceSource: 'rpc' | 'cache',
+    vaultContractId: string | null,
+  ): UserSubscriptionWithLiveBalance {
+    return {
+      ...subscription,
+      indexedAmount: Number(subscription.amount),
+      liveBalance,
+      liveBalanceStroops,
+      balanceSource,
+      vaultContractId,
+    };
+  }
+
+  private resolveVaultContractId(
+    subscription: UserSubscription,
+  ): string | null {
+    const candidates = [
+      (subscription as UserSubscription & { contractId?: unknown }).contractId,
+      (
+        subscription.product as SavingsProduct & {
+          contractId?: unknown;
+          vaultContractId?: unknown;
+        }
+      )?.contractId,
+      (
+        subscription.product as SavingsProduct & {
+          contractId?: unknown;
+          vaultContractId?: unknown;
+        }
+      )?.vaultContractId,
+    ];
+
+    const contractId = candidates.find(
+      (candidate): candidate is string =>
+        typeof candidate === 'string' && candidate.trim().length > 0,
+    );
+
+    return contractId ?? null;
   }
 
   private calculatePercentageComplete(
