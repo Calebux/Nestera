@@ -21,18 +21,21 @@ export class GovernanceProposalsController {
   @Get()
   @ApiOperation({
     summary: 'List governance proposals',
-    description: 'Returns indexed proposals from the DB cache, optionally filtered by status.',
+    description:
+      'Returns indexed proposals from the DB cache, optionally filtered by status.',
   })
   @ApiQuery({
     name: 'status',
     required: false,
     enum: ProposalStatus,
-    description: 'Filter by proposal status (e.g. ACTIVE, PASSED, FAILED, CANCELLED)',
+    description:
+      'Filter by proposal status (e.g. ACTIVE, PASSED, FAILED, CANCELLED)',
     example: 'ACTIVE',
   })
   @ApiResponse({
     status: 200,
-    description: 'List of proposals with computed vote percentages and timeline boundaries',
+    description:
+      'List of proposals with computed vote percentages and timeline boundaries',
     type: [ProposalListItemDto],
   })
   getProposals(
@@ -42,8 +45,11 @@ export class GovernanceProposalsController {
 
     if (statusKey !== undefined) {
       // Accept both enum keys (ACTIVE) and enum values (Active)
-      const byKey = ProposalStatus[statusKey.toUpperCase() as keyof typeof ProposalStatus];
-      const byValue = Object.values(ProposalStatus).includes(statusKey as ProposalStatus)
+      const byKey =
+        ProposalStatus[statusKey.toUpperCase() as keyof typeof ProposalStatus];
+      const byValue = Object.values(ProposalStatus).includes(
+        statusKey as ProposalStatus,
+      )
         ? (statusKey as ProposalStatus)
         : undefined;
       status = byKey ?? byValue;

@@ -23,11 +23,11 @@ export class OracleService {
   private readonly logger = new Logger(OracleService.name);
   private readonly COINGECKO_API_URL = 'https://api.coingecko.com/api/v3';
   private readonly CACHE_TTL = 300000; // 5 minutes in milliseconds
-  
+
   // Fallback prices in case API fails
   private readonly FALLBACK_PRICES: Record<string, number> = {
     stellar: 0.12, // XLM fallback price
-    aqua: 0.25,   // AQUA fallback price
+    aqua: 0.25, // AQUA fallback price
     'usd-coin': 1.0, // USDC fallback
   };
 
@@ -156,10 +156,10 @@ export class OracleService {
 
     try {
       this.logger.debug(`Fetching fresh price for: ${assetId}`);
-      
+
       // Try HttpService first (NestJS axios)
       let price: number | undefined;
-      
+
       try {
         const response = await firstValueFrom(
           this.httpService.get<PriceData>(
@@ -174,8 +174,10 @@ export class OracleService {
         );
         price = response.data[assetId]?.usd;
       } catch (httpError) {
-        this.logger.warn(`HttpService failed for ${assetId}, trying direct axios: ${(httpError as Error).message}`);
-        
+        this.logger.warn(
+          `HttpService failed for ${assetId}, trying direct axios: ${(httpError as Error).message}`,
+        );
+
         // Fallback to direct axios call
         try {
           const axiosResponse = await axios.get<PriceData>(
@@ -190,7 +192,9 @@ export class OracleService {
           );
           price = axiosResponse.data[assetId]?.usd;
         } catch (axiosError) {
-          this.logger.error(`Direct axios also failed for ${assetId}: ${(axiosError as Error).message}`);
+          this.logger.error(
+            `Direct axios also failed for ${assetId}: ${(axiosError as Error).message}`,
+          );
         }
       }
 
@@ -198,7 +202,9 @@ export class OracleService {
         // Use fallback price
         const fallbackPrice = this.FALLBACK_PRICES[assetId];
         if (fallbackPrice !== undefined) {
-          this.logger.warn(`Using fallback price for ${assetId}: ${fallbackPrice}`);
+          this.logger.warn(
+            `Using fallback price for ${assetId}: ${fallbackPrice}`,
+          );
           return fallbackPrice;
         }
         this.logger.warn(`Price not found for asset: ${assetId}`);
@@ -214,7 +220,7 @@ export class OracleService {
         `Failed to fetch price for asset ${assetId}: ${(error as Error).message}`,
         error,
       );
-      
+
       // Return fallback price if available
       const fallbackPrice = this.FALLBACK_PRICES[assetId];
       if (fallbackPrice !== undefined) {
@@ -232,12 +238,12 @@ export class OracleService {
   async getAllPrices(): Promise<Map<string, number>> {
     const assetIds = ['stellar', 'aqua', 'usd-coin'];
     const prices = new Map<string, number>();
-    
+
     for (const assetId of assetIds) {
       const price = await this.getCachedPrice(assetId);
       prices.set(assetId, price);
     }
-    
+
     return prices;
   }
 }

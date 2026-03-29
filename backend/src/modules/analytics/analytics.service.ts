@@ -55,7 +55,7 @@ export class AnalyticsService {
 
     // 2. Get current XLM price for USD conversion
     const xlmPrice = await this.oracleService.getXLMPrice();
-    
+
     // 3. Define intervals based on timeframe
     const now = new Date();
     let startDate: Date;
@@ -130,7 +130,7 @@ export class AnalyticsService {
 
       // Convert native value to USD
       const valueUsd = runningBalance * xlmPrice;
-      
+
       timeline.push({
         date: this.formatDate(periodEnd, timeframe),
         value: runningBalance, // Native XLM value
