@@ -26,6 +26,7 @@ import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Role } from '../../common/enums/role.enum';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ProductCapacitySnapshot } from '../savings/savings.service';
 import { PageOptionsDto } from '../../common/dto/page-options.dto';
 import { CreateProductDto } from '../savings/dto/create-product.dto';
@@ -82,6 +83,30 @@ export class AdminSavingsController {
     return this.adminSavingsService.getSubscribers(id, opts);
   }
 
+  @Post('products/:id/migrations')
+  @ApiOperation({
+    summary: 'Migrate active subscriptions to another product version (admin)',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Subscriptions migrated to the target product version',
+  })
+  async migrateProductSubscriptions(
+    @Param('id') id: string,
+    @Body() body: { targetProductId: string; subscriptionIds?: string[] },
+    @CurrentUser() user: { id: string; email: string },
+  ): Promise<{ migratedCount: number; targetProductId: string }> {
+    const result = await this.savingsService.migrateSubscriptionsToVersion(
+      id,
+      body.targetProductId,
+      user.id,
+      body.subscriptionIds,
+    );
+
+    return {
+      migratedCount: result.migratedCount,
+      targetProductId: result.targetProduct.id,
+    };
   @Get('products/:id/capacity-metrics')
   @ApiOperation({ summary: 'Get live capacity utilization metrics (admin)' })
   @ApiResponse({
