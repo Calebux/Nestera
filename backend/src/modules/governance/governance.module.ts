@@ -6,6 +6,7 @@ import { GovernanceService } from './governance.service';
 import { GovernanceIndexerService } from './governance-indexer.service';
 import { UserModule } from '../user/user.module';
 import { BlockchainModule } from '../blockchain/blockchain.module';
+import { TransactionsModule } from '../transactions/transactions.module';
 import { GovernanceProposal } from './entities/governance-proposal.entity';
 import { Vote } from './entities/vote.entity';
 
@@ -13,6 +14,7 @@ import { Vote } from './entities/vote.entity';
   imports: [
     UserModule,
     BlockchainModule,
+    TransactionsModule,
     TypeOrmModule.forFeature([GovernanceProposal, Vote]),
   ],
   controllers: [GovernanceController, GovernanceProposalsController],
