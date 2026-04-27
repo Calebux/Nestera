@@ -25,6 +25,7 @@ import { AdminUsersService } from './admin-users.service';
 import { AdminSavingsService } from './admin-savings.service';
 import { AdminDisputesService } from './admin-disputes.service';
 import { AdminAuditLogsService } from './admin-audit-logs.service';
+import { AdminAuditLogsArchivalService } from './admin-audit-logs-archival.service';
 import { AdminNotificationsService } from './admin-notifications.service';
 import { AdminTransactionsService } from './admin-transactions.service';
 import { AdminTransactionNote } from './entities/admin-transaction-note.entity';
@@ -73,10 +74,11 @@ import { Dispute, DisputeTimeline } from '../disputes/entities/dispute.entity';
     AdminSavingsService,
     AdminDisputesService,
     AdminAuditLogsService,
+    AdminAuditLogsArchivalService,
     AdminNotificationsService,
     AdminTransactionsService,
     AdminWithdrawalService,
   ],
-  exports: [AdminDisputesService, AdminAuditLogsService],
+  exports: [AdminDisputesService, AdminAuditLogsService, AdminAuditLogsArchivalService],
 })
 export class AdminModule {}
